@@ -1,0 +1,794 @@
+diff -Nuar dvblast-3.4/demux.c dvblast-3.4-mpts/demux.c
+--- dvblast-3.4/demux.c	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/demux.c	2021-08-29 12:13:45.098317135 -0400
+@@ -33,6 +33,8 @@
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <ev.h>
+ 
+ #include "dvblast.h"
+@@ -94,6 +96,7 @@
+ {
+     uint16_t i_sid, i_pmt_pid;
+     uint8_t *p_current_pmt;
++    int oncam;
+     struct eit_sections eit_table[MAX_EIT_TABLES];
+ } sid_t;
+ 
+@@ -270,6 +273,78 @@
+ static void PrintCb( struct ev_loop *loop, struct ev_timer *w, int revents )
+ {
+     uint64_t i_bitrate = i_nb_packets * TS_SIZE * 8 * 1000000 / i_print_period;
++
++    if (camodule.logfile[0] != 0) {
++        int fd = open(camodule.logfile, O_CREAT | O_WRONLY | O_TRUNC | O_SYNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++        char str[32768];
++        char cid[4096];
++        char *tmp;
++        int sze = 0;
++        int i = 0;
++        int numpmt = 0;
++    
++        for ( i = 0; i < i_nb_sids; i++ ) {
++            if ( pp_sids[i]->oncam == 1 )
++               numpmt++;
++        }
++    
++        cid[0] = 0;
++        for (i = 0; i < camodule.numcaid; i++) {
++           if (cid[0] == 0) {
++               snprintf(cid, 4096, "%d", camodule.caids[i]);
++           } else {
++               tmp = strdup(cid);
++               snprintf(cid, 4096, "%s,%d", tmp, camodule.caids[i]);
++               free(tmp);
++           }
++        }
++    
++        sze = snprintf(str, 32767,
++            "bitrate:%"PRIu64"%c"
++            "slotnum:%d%c"
++            "numdescr:%d%c"
++            "isexist:%d%c"
++            "isok:%d%c"
++            "camready:%d%c"
++            "camremoved:%d%c"
++            "campresent:%d%c"
++            "camtype:%d%c"
++            "camcode:%d%c"
++            "cammanuf:%d%c"
++            "campmt:%d%c"
++            "numcaid:%d%c"
++            "caids:%s%c"
++            "camname:%s%c"
++            "descr:%s%c"
++            "mmitext:%s%c"
++            "camhost:DVBlast %s (%s)%c"
++            ,
++            i_bitrate, (char)27,
++            camodule.slotnum, (char)27,
++            camodule.numdescr, (char)27,
++            camodule.isexist, (char)27,
++            camodule.isok, (char)27,
++            camodule.camready, (char)27,
++            camodule.camremoved, (char)27,
++            camodule.campresent, (char)27,
++            camodule.camtype, (char)27,
++            camodule.camcode, (char)27,
++            camodule.cammanuf, (char)27,
++            numpmt, (char)27,
++            camodule.numcaid, (char)27,
++            cid, (char)27,
++            camodule.camname, (char)27,
++            camodule.descr, (char)27,
++            camodule.mmitext, (char)27,
++            VERSION, VERSION_EXTRA, (char)27
++        );
++
++        write(fd, str, sze);
++        close(fd);
++        i_nb_packets = 0;
++        return;
++    }
++
+     switch (i_print_type)
+     {
+         case PRINT_XML:
+@@ -844,8 +919,10 @@
+ 
+             if ( i_ca_handle && !SIDIsSelected( i_old_sid )
+                   && p_old_sid->p_current_pmt != NULL
+-                  && PMTNeedsDescrambling( p_old_sid->p_current_pmt ) )
++                  && PMTNeedsDescrambling( p_old_sid->p_current_pmt ) ) {
++                p_old_sid->oncam = 0;
+                 en50221_DeletePMT( p_old_sid->p_current_pmt );
++            }
+         }
+     }
+ 
+@@ -892,8 +969,10 @@
+ 
+             if ( i_ca_handle && !SIDIsSelected( i_sid )
+                   && p_sid->p_current_pmt != NULL
+-                  && PMTNeedsDescrambling( p_sid->p_current_pmt ) )
++                  && PMTNeedsDescrambling( p_sid->p_current_pmt ) ) {
++                p_sid->oncam = 1;
+                 en50221_AddPMT( p_sid->p_current_pmt );
++            }
+         }
+     }
+ 
+@@ -2098,8 +2177,10 @@
+     for ( i = 0; i < i_nb_sids; i++ )
+         if ( pp_sids[i]->p_current_pmt != NULL
+               && SIDIsSelected( pp_sids[i]->i_sid )
+-              && PMTNeedsDescrambling( pp_sids[i]->p_current_pmt ) )
++              && PMTNeedsDescrambling( pp_sids[i]->p_current_pmt ) ) {
++            pp_sids[i]->oncam = 1;
+             en50221_AddPMT( pp_sids[i]->p_current_pmt );
++        }
+ }
+ 
+ /* Find CA descriptor that have PID i_ca_pid */
+@@ -2142,8 +2223,10 @@
+         uint8_t j;
+ 
+         if ( i_ca_handle && SIDIsSelected( i_sid )
+-             && PMTNeedsDescrambling( p_pmt ) )
++             && PMTNeedsDescrambling( p_pmt ) ) {
++            p_sid->oncam = 0;
+             en50221_DeletePMT( p_pmt );
++        }
+ 
+         if ( i_pcr_pid != PADDING_PID
+               && i_pcr_pid != p_sid->i_pmt_pid )
+@@ -2370,6 +2453,7 @@
+                 {
+                     p_sid = malloc( sizeof(sid_t) );
+                     p_sid->p_current_pmt = NULL;
++                    p_sid->oncam = 0;
+                     for ( r = 0; r < MAX_EIT_TABLES; r++ ) {
+                         psi_table_init( p_sid->eit_table[r].data );
+                     }
+@@ -2723,8 +2807,10 @@
+     b_is_selected = SIDIsSelected( i_sid );
+ 
+     if ( i_ca_handle && b_is_selected &&
+-         !b_needs_descrambling && b_needed_descrambling )
++         !b_needs_descrambling && b_needed_descrambling ) {
++        p_sid->oncam = 0;
+         en50221_DeletePMT( p_sid->p_current_pmt );
++    }
+ 
+     if ( p_sid->p_current_pmt != NULL )
+     {
+@@ -2765,8 +2851,10 @@
+ 
+     if ( i_ca_handle && b_is_selected )
+     {
+-        if ( b_needs_descrambling && !b_needed_descrambling )
++        if ( b_needs_descrambling && !b_needed_descrambling ) {
++            p_sid->oncam = 1;
+             en50221_AddPMT( p_pmt );
++        }
+         else if ( b_needs_descrambling && b_needed_descrambling )
+             en50221_UpdatePMT( p_pmt );
+     }
+diff -Nuar dvblast-3.4/dvb.c dvblast-3.4-mpts/dvb.c
+--- dvblast-3.4/dvb.c	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/dvb.c	2021-08-29 06:01:48.000000000 -0400
+@@ -66,7 +66,7 @@
+ /*****************************************************************************
+  * Local declarations
+  *****************************************************************************/
+-#define DVR_READ_TIMEOUT 30000000 /* 30 s */
++#define DVR_READ_TIMEOUT 5000000 /* 5 s */
+ #define MAX_READ_ONCE 50
+ #define DVR_BUFFER_SIZE 40*188*1024 /* bytes */
+ 
+@@ -199,6 +199,10 @@
+ 
+ static void DVRMuteCb(struct ev_loop *loop, struct ev_timer *w, int revents)
+ {
++    msg_Warn( NULL, "no DVR output" );
++    ev_break(loop, EVBREAK_ALL);
++    return;
++
+     msg_Warn( NULL, "no DVR output, resetting" );
+     ev_timer_stop(loop, w);
+ 
+@@ -281,6 +285,7 @@
+  *****************************************************************************/
+ static void PrintCb( struct ev_loop *loop, struct ev_timer *w, int revents )
+ {
++/*
+     uint32_t i_ber = 0;
+     uint16_t i_strength = 0, i_snr = 0;
+     uint32_t i_uncorrected = 0;
+@@ -304,6 +309,7 @@
+         default:
+             break;
+     }
++*/
+ }
+ 
+ /*****************************************************************************
+diff -Nuar dvblast-3.4/dvblast.c dvblast-3.4-mpts/dvblast.c
+--- dvblast-3.4/dvblast.c	2021-08-29 12:35:04.367819826 -0400
++++ dvblast-3.4-mpts/dvblast.c	2021-08-29 12:36:35.723629918 -0400
+@@ -58,6 +58,7 @@
+ output_t **pp_outputs = NULL;
+ int i_nb_outputs = 0;
+ output_t output_dup;
++camodule_t camodule;
+ bool b_passthrough = false;
+ static const char *psz_conf_file = NULL;
+ char *psz_srv_socket = NULL;
+@@ -94,6 +95,7 @@
+ int b_budget_mode = 0;
+ int b_any_type = 0;
+ int b_select_pmts = 0;
++int b_mpts_only = 0;
+ int b_random_tsid = 0;
+ char *psz_udp_src = NULL;
+ int i_asi_adapter = 0;
+@@ -157,6 +159,8 @@
+     p_config->i_if_index_v6 = -1;
+     p_config->i_srcport = 0;
+ 
++    p_config->uds_addr.sun_family = AF_UNSPEC;
++
+     p_config->pi_pids = NULL;
+     p_config->b_passthrough = false;
+     p_config->b_do_remap = false;
+@@ -283,6 +287,17 @@
+ 
+     p_config->psz_displayname = strdup( psz_string );
+ 
++    if (strncmp(psz_string, "unix://", 7) == 0) {
++       memset(&p_config->uds_addr, 0, sizeof(struct sockaddr_un));
++       p_config->uds_addr.sun_family = AF_UNIX;
++       strcpy(p_config->uds_addr.sun_path, psz_string + 7);
++       p_config->i_family = AF_INET;
++
++       if ( !p_config->i_mtu )
++           p_config->i_mtu = DEFAULT_IPV4_MTU;
++       return true;
++    }
++
+     p_ai = ParseNodeService( psz_string, &psz_string, DEFAULT_PORT );
+     if ( p_ai == NULL ) return false;
+     memcpy( &p_config->connect_addr, p_ai->ai_addr, p_ai->ai_addrlen );
+@@ -634,7 +649,7 @@
+         "[-W] [-Y] [-l] [-g <logger ident>] [-Z <mrtg file>] [-V] [-h] [-B <provider_name>] "
+         "[-1 <mis_id>] [-2 <size>] [-5 <DVBS|DVBS2|DVBC_ANNEX_A|DVBC_ANNEX_B|DVBT|DVBT2|ATSC|ISDBT>] -y <ca_dev_number> "
+         "[-J <DVB charset>] [-Q <quit timeout>] [-0 pid_mapping] [-x <text|xml>]"
+-        "[-6 <print period>] [-7 <ES timeout>]" );
++        "[-6 <print period>] [-7 <ES timeout>] [-4 <config file>]" );
+ 
+     msg_Raw( NULL, "Input:" );
+ #ifdef HAVE_ASI_SUPPORT
+@@ -686,6 +701,8 @@
+ 
+     msg_Raw( NULL, "Output:" );
+     msg_Raw( NULL, "  -c --config-file <config file>" );
++    msg_Raw( NULL, "  -4 --mpts-only <config file>" );
++    msg_Raw( NULL, "     Create MPTS for SIDs/PIDs defined in config file, no STPS output, MPTS output to -d switch." );
+     msg_Raw( NULL, "  -C --dvb-compliance   pass through or build the mandatory DVB tables" );
+     msg_Raw( NULL, "  -d --duplicate        duplicate all received packets to a given destination" );
+     msg_Raw( NULL, "  -3 --passthrough      duplicate all received packets to stdout" );
+@@ -733,6 +750,7 @@
+     int b_enable_syslog = 0;
+     struct ev_signal sigint_watcher, sigterm_watcher, sighup_watcher;
+     struct ev_timer quit_watcher;
++    char *calf;
+ 
+     print_fh = stdout;
+ 
+@@ -746,6 +764,7 @@
+     static const struct option long_options[] =
+     {
+         { "config-file",     required_argument, NULL, 'c' },
++        { "mpts-only",       required_argument, NULL, '4' },
+         { "remote-socket",   required_argument, NULL, 'r' },
+         { "ttl",             required_argument, NULL, 't' },
+         { "rtp-output",      required_argument, NULL, 'o' },
+@@ -812,7 +831,7 @@
+         { 0, 0, 0, 0 }
+     };
+ 
+-    while ( (c = getopt_long(i_argc, pp_argv, "q::c:r:t:o:i:a:n:5:f:F:R:s:S:k:v:pb:I:m:P:K:G:H:X:O:uwUTL:E:d:3D:A:lg:zCWYeM:N:j:J:B:x:Q:6:7:hVZ:y:0:1:2:9:", long_options, NULL)) != -1 )
++    while ( (c = getopt_long(i_argc, pp_argv, "q::c:r:t:o:i:a:n:5:f:F:R:s:S:k:v:pb:I:m:P:K:G:H:X:O:uwUTL:E:d:3D:A:lg:zCWYeM:N:j:J:B:x:Q:6:7:hVZ:y:0:1:2:9:4:", long_options, NULL)) != -1 )
+     {
+         switch ( c )
+         {
+@@ -849,6 +868,12 @@
+             b_select_pmts = 1;
+             break;
+ 
++        case '4':
++            psz_conf_file = optarg;
++            b_select_pmts = 1;
++            b_mpts_only = 1;
++            break;
++
+         case 'r':
+             psz_srv_socket = optarg;
+             break;
+@@ -1251,17 +1276,27 @@
+         output_config_t config;
+ 
+         config_Defaults( &config );
+-        if ( !config_ParseHost( &config, psz_dup_config ) )
++        if ( !config_ParseHost( &config, psz_dup_config ) ) {
+             msg_Err( NULL, "Invalid target address for -d switch" );
++            exit(-12);
++        }
+         else
+         {
+-            output_Init( &output_dup, &config );
++            output_Init( &output_dup, &config, b_mpts_only );
+             output_Change( &output_dup, &config );
+         }
+ 
+         config_Free( &config );
+     }
+ 
++    memset( &camodule, 0, sizeof(camodule) );
++    calf = getenv("DVBLAST_CISTATS");
++    if (calf != (char *) 0) {
++        strncpy(camodule.logfile, calf, 254);
++        if (i_print_period < 1000)
++            i_print_period = 2000000;
++    }
++
+     config_strdvb( &network_name, psz_network_name, psz_dvb_charset );
+     config_strdvb( &provider_name, psz_provider_name, psz_dvb_charset );
+ 
+diff -Nuar dvblast-3.4/dvblast.h dvblast-3.4-mpts/dvblast.h
+--- dvblast-3.4/dvblast.h	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/dvblast.h	2021-08-29 12:13:45.099400448 -0400
+@@ -27,6 +27,7 @@
+ #include <netinet/udp.h>
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
++#include <sys/un.h>
+ 
+ #include "config.h"
+ 
+@@ -127,6 +128,8 @@
+     struct sockaddr_storage bind_addr;
+     int i_if_index_v6;
+ 
++    struct sockaddr_un uds_addr;
++
+     /* common config */
+     char *psz_displayname;
+     uint64_t i_config;
+@@ -164,6 +167,7 @@
+ 
+     /* output */
+     int i_handle;
++    int mpts_only;
+     packet_t *p_packets, *p_last_packet;
+     packet_t *p_packet_lifo;
+     unsigned int i_packet_count;
+@@ -193,6 +197,26 @@
+     struct udprawpkt raw_pkt_header;
+ } output_t;
+ 
++typedef struct camodule_t
++{
++    int slotnum;
++    int numdescr;
++    int isexist;
++    int isok;
++    int camready;
++    int camremoved;
++    int campresent;
++    int camtype;
++    int camcode;
++    int cammanuf;
++    int numcaid;
++    int caids[255];
++    char logfile[255];
++    char camname[4096];
++    char descr[4096];
++    char mmitext[4096];
++} camodule_t;
++
+ typedef struct ts_pid_info {
+     mtime_t  i_first_packet_ts;         /* Time of the first seen packet */
+     mtime_t  i_last_packet_ts;          /* Time of the last seen packet */
+@@ -213,6 +237,7 @@
+ extern output_t **pp_outputs;
+ extern int i_nb_outputs;
+ extern output_t output_dup;
++extern camodule_t camodule;
+ extern bool b_passthrough;
+ extern char *psz_srv_socket;
+ extern int i_adapter;
+@@ -251,6 +276,7 @@
+ extern int b_budget_mode;
+ extern int b_any_type;
+ extern int b_select_pmts;
++extern int b_mpts_only;
+ extern int b_random_tsid;
+ extern int dvb_plp_id;
+ extern bool b_enable_emm;
+@@ -357,7 +383,7 @@
+ void demux_get_PIDS_info( uint8_t *p_data );
+ 
+ output_t *output_Create( const output_config_t *p_config );
+-int output_Init( output_t *p_output, const output_config_t *p_config );
++int output_Init( output_t *p_output, const output_config_t *p_config, int ismpts );
+ void output_Close( output_t *p_output );
+ void output_Put( output_t *p_output, block_t *p_block );
+ output_t *output_Find( const output_config_t *p_config );
+diff -Nuar dvblast-3.4/en50221.c dvblast-3.4-mpts/en50221.c
+--- dvblast-3.4/en50221.c	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/en50221.c	2021-08-29 12:25:03.338021033 -0400
+@@ -151,6 +151,21 @@
+  *****************************************************************************/
+ #define SIZE_INDICATOR 0x80
+ 
++void en50221_infostr( char *dst, char *src, int add, const char *nl )
++{
++   char tmp[4096];
++   if (add) {
++      if (dst[0] != 0) {
++         strncpy(tmp, dst, 4095);
++         snprintf(dst, 4095, "%s%s%s", tmp, ((nl != (char *) 0) ? nl : ""), src);
++      } else {
++         strncpy(dst, src, 4095);
++      }
++   } else {
++      strncpy(dst, src, 4095);
++   }
++}
++
+ static uint8_t *GetLength( uint8_t *p_data, int *pi_length )
+ {
+     *pi_length = *p_data++;
+@@ -1037,9 +1052,8 @@
+         d = GetLength( d, &l );
+ 
+         {
+-            char *psz_name = malloc(l + 1);
+-            memcpy( psz_name, d, l );
+-            psz_name[l] = '\0';
++            char *psz_name = dvb_string_get( d, l, demux_Iconv, p_access );
++            strcpy(camodule.camname, psz_name);
+             msg_Info( p_access, "CAM: %s, %02X, %04X, %04X",
+                       psz_name, i_type, i_manufacturer, i_code );
+             switch (i_print_type)
+@@ -1058,6 +1072,10 @@
+             }
+             free(psz_name);
+         }
++
++        camodule.camtype = i_type;
++        camodule.camcode = i_code;
++        camodule.cammanuf = i_manufacturer;
+         break;
+     }
+     default:
+@@ -1362,9 +1380,12 @@
+         p_ids->pi_system_ids = malloc( p_ids->i_nb_system_ids
+                                         * sizeof(uint16_t) );
+ 
++        camodule.numcaid = 0;
+         for ( i = 0; i < p_ids->i_nb_system_ids; i++ )
+         {
+             p_ids->pi_system_ids[i] = ((uint16_t)d[0] << 8) | d[1];
++            if (i < 255)
++               camodule.caids[camodule.numcaid++] = p_ids->pi_system_ids[i];
+             d += 2;
+             msg_Dbg( p_access, "- 0x%x", p_ids->pi_system_ids[i] );
+         }
+@@ -1752,6 +1773,8 @@
+     p_mmi->last_object.u.menu.i_choices = 0;
+     p_mmi->last_object.u.menu.ppsz_choices = NULL;
+ 
++    camodule.mmitext[0] = 0;
++
+     if ( l > 0 )
+     {
+         l--; d++; /* choice_nb */
+@@ -1761,6 +1784,9 @@
+         {                                                                   \
+             p_mmi->last_object.u.menu.psz_##x                               \
+                             = MMIGetText( p_access, &d, &l );               \
++            if (strlen(p_mmi->last_object.u.menu.psz_##x))                  \
++               en50221_infostr(camodule.mmitext, p_mmi->last_object.u.menu.psz_##x, 1, 0); \
++            en50221_infostr(camodule.mmitext, "_nl_", 1, 0);                \
+             msg_Dbg( p_access, "MMI " STRINGIFY( x ) ": %s",                \
+                      p_mmi->last_object.u.menu.psz_##x );                   \
+         }
+@@ -1777,6 +1803,9 @@
+                         p_mmi->last_object.u.menu.ppsz_choices,
+                         psz_text );
+             msg_Dbg( p_access, "MMI choice: %s", psz_text );
++            if (strlen(psz_text))
++               en50221_infostr(camodule.mmitext, psz_text, 1, 0);
++            en50221_infostr(camodule.mmitext, "_nl_", 1, 0);
+         }
+     }
+ 
+@@ -1868,6 +1897,7 @@
+     p_sessions[i_session_id - 1].p_sys = malloc(sizeof(mmi_t));
+     p_mmi = (mmi_t *)p_sessions[i_session_id - 1].p_sys;
+     p_mmi->last_object.i_object_type = EN50221_MMI_NONE;
++    camodule.mmitext[0] = 0;
+ }
+ 
+ 
+@@ -1969,6 +1999,16 @@
+     ResetSlot( i_slot );
+ }
+ 
++void en50221_inforeset( void )
++{
++    camodule.isok = 0;
++    camodule.camtype = 0;
++    camodule.camcode = 0;
++    camodule.cammanuf = 0;
++    camodule.numcaid = 0;
++    camodule.camname[0] = 0;
++    camodule.mmitext[0] = 0;
++}
+ 
+ /*
+  * External entry points
+@@ -1990,6 +2030,7 @@
+         msg_Warn( NULL, "failed opening CAM device %s (%s)",
+                   psz_tmp, strerror(errno) );
+         i_ca_handle = 0;
++        en50221_inforeset();
+         return;
+     }
+ 
+@@ -1999,37 +2040,61 @@
+                  strerror(errno) );
+         close( i_ca_handle );
+         i_ca_handle = 0;
++        en50221_inforeset();
+         return;
+     }
+ 
++    camodule.isexist = 1;
++    camodule.slotnum = caps.slot_num;
++    camodule.numdescr = caps.descr_num;
++    camodule.descr[0] = 0;
++
+     /* Output CA capabilities */
+     msg_Dbg( NULL, "CA interface with %d %s", caps.slot_num,
+         caps.slot_num == 1 ? "slot" : "slots" );
+-    if ( caps.slot_type & CA_CI )
++    if ( caps.slot_type & CA_CI ) {
+         msg_Dbg( NULL, "  CI high level interface type" );
+-    if ( caps.slot_type & CA_CI_LINK )
++        en50221_infostr(camodule.descr, "CI high level interface type", 1, "\n");
++    }
++    if ( caps.slot_type & CA_CI_LINK ) {
+         msg_Dbg( NULL, "  CI link layer level interface type" );
+-    if ( caps.slot_type & CA_CI_PHYS )
++        en50221_infostr(camodule.descr, "CI link layer level interface type", 1, "\n");
++    }
++    if ( caps.slot_type & CA_CI_PHYS ) {
+         msg_Dbg( NULL, "  CI physical layer level interface type (not supported) " );
+-    if ( caps.slot_type & CA_DESCR )
++        en50221_infostr(camodule.descr, "CI physical layer level interface type (not supported)", 1, "\n");
++    }
++    if ( caps.slot_type & CA_DESCR ) {
+         msg_Dbg( NULL, "  built-in descrambler detected" );
+-    if ( caps.slot_type & CA_SC )
++        en50221_infostr(camodule.descr, "Built-in Descrambler", 1, "\n");
++    }
++    if ( caps.slot_type & CA_SC ) {
+         msg_Dbg( NULL, "  simple smart card interface" );
++        en50221_infostr(camodule.descr, "Simple Smart Card Interface", 1, "\n");
++    }
+ 
+     msg_Dbg( NULL, "  %d available %s", caps.descr_num,
+         caps.descr_num == 1 ? "descrambler (key)" : "descramblers (keys)" );
+-    if ( caps.descr_type & CA_ECD )
++    if ( caps.descr_type & CA_ECD ) {
+         msg_Dbg( NULL, "  ECD scrambling system supported" );
+-    if ( caps.descr_type & CA_NDS )
++        en50221_infostr(camodule.descr, "ECD scrambling system supported", 1, "\n");
++    }
++    if ( caps.descr_type & CA_NDS ) {
+         msg_Dbg( NULL, "  NDS scrambling system supported" );
+-    if ( caps.descr_type & CA_DSS )
++        en50221_infostr(camodule.descr, "NDS scrambling system supported", 1, "\n");
++    }
++    if ( caps.descr_type & CA_DSS ) {
+         msg_Dbg( NULL, "  DSS scrambling system supported" );
++        en50221_infostr(camodule.descr, "DSS scrambling system supported", 1, "\n");
++    }
+ 
+     if ( caps.slot_num == 0 )
+     {
+         msg_Err( NULL, "CAM module with no slots" );
+         close( i_ca_handle );
+         i_ca_handle = 0;
++        en50221_infostr(camodule.descr, "There is no slot", 0, 0);
++        en50221_inforeset();
+         return;
+     }
+ 
+@@ -2042,6 +2107,8 @@
+         msg_Err( NULL, "Incompatible CAM interface" );
+         close( i_ca_handle );
+         i_ca_handle = 0;
++        en50221_infostr(camodule.descr, "Incompatible CAM interface", 0, 0);
++        en50221_inforeset();
+         return;
+     }
+ 
+@@ -2189,6 +2256,14 @@
+             continue;
+         }
+ 
++        camodule.campresent = ((sinfo.flags & CA_CI_MODULE_PRESENT) == CA_CI_MODULE_PRESENT) ? 1 : 0;
++        camodule.camready = ((sinfo.flags & CA_CI_MODULE_READY) == CA_CI_MODULE_READY) ? 1 : 0;
++        if (p_slot->b_active)
++           camodule.camremoved = ((camodule.camready == 1) ? 0 : 1);
++        camodule.isok = (camodule.campresent && camodule.camready) ? 1 : 0;
++        if (camodule.campresent == 0)
++           camodule.mmitext[0] = 0;
++
+         if ( !(sinfo.flags & CA_CI_MODULE_READY) )
+         {
+             if ( p_slot->b_active )
+diff -Nuar dvblast-3.4/Makefile dvblast-3.4-mpts/Makefile
+--- dvblast-3.4/Makefile	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/Makefile	2021-08-29 13:03:34.842596058 -0400
+@@ -13,7 +13,7 @@
+ ifneq "$(GIT_VER)" ""
+ CFLAGS += -DVERSION_EXTRA=\"git-$(GIT_VER)\"
+ else
+-CFLAGS += -DVERSION_EXTRA=\"release\"
++CFLAGS += -DVERSION_EXTRA=\"mpts/uds/cistat\ patch\"
+ endif
+ 
+ ifeq ($(uname_S),Linux)
+diff -Nuar dvblast-3.4/output.c dvblast-3.4-mpts/output.c
+--- dvblast-3.4/output.c	2018-09-23 10:05:51.000000000 -0400
++++ dvblast-3.4-mpts/output.c	2021-08-29 12:13:45.105900328 -0400
+@@ -210,7 +210,7 @@
+         pp_outputs[i] = p_output;
+     }
+ 
+-    if ( output_Init( p_output, p_config ) < 0 )
++    if ( output_Init( p_output, p_config, 0 ) < 0 )
+         return NULL;
+ 
+     return p_output;
+@@ -229,7 +229,7 @@
+ /*****************************************************************************
+  * output_Init : set up the output initial config
+  *****************************************************************************/
+-int output_Init( output_t *p_output, const output_config_t *p_config )
++int output_Init( output_t *p_output, const output_config_t *p_config, int ismpts )
+ {
+     socklen_t i_sockaddr_len = (p_config->i_family == AF_INET) ?
+                                sizeof(struct sockaddr_in) :
+@@ -239,6 +239,7 @@
+     config_Init( &p_output->config );
+ 
+     /* Init run-time values */
++    p_output->mpts_only = ismpts;
+     p_output->p_packets = p_output->p_last_packet = NULL;
+     p_output->p_packet_lifo = NULL;
+     p_output->i_packet_count = 0;
+@@ -264,6 +265,39 @@
+     /* Init the mapped pids to unused */
+     init_pid_mapping( p_output );
+ 
++    if ((b_mpts_only == 1) && (p_output->mpts_only != 1)) {
++       p_output->i_handle = -1;
++       p_output->config.i_config |= OUTPUT_VALID;
++       return 0;
++    }
++
++    if (p_config->uds_addr.sun_family == AF_UNIX) {
++        p_output->config.i_family = p_config->i_family;
++        memcpy( &p_output->config.uds_addr, &p_config->uds_addr,
++                sizeof(struct sockaddr_un) );
++        p_output->i_handle = socket(PF_UNIX, SOCK_DGRAM, 0);
++        if ( p_output->i_handle < 0 )
++        {
++            msg_Err( NULL, "couldn't create socket (%s)", strerror(errno) );
++            p_output->config.i_config &= ~OUTPUT_VALID;
++            exit(-12);
++            return -errno;
++        }
++        if ( connect( p_output->i_handle,
++                      (struct sockaddr *)&p_output->config.uds_addr,
++                      sizeof(struct sockaddr_un) ) < 0 )
++        {
++            msg_Err( NULL, "couldn't connect socket (%s)", strerror(errno) );
++            close( p_output->i_handle );
++            p_output->config.i_config &= ~OUTPUT_VALID;
++            exit(-12);
++            return -errno;
++        }
++
++        p_output->config.i_config |= OUTPUT_VALID;
++        return 0;
++    }
++
+     /* Init socket-related fields */
+     p_output->config.i_family = p_config->i_family;
+     memcpy( &p_output->config.connect_addr, &p_config->connect_addr,
+@@ -377,7 +411,8 @@
+     free( p_output->p_eit_ts_buffer );
+     p_output->config.i_config &= ~OUTPUT_VALID;
+ 
+-    close( p_output->i_handle );
++    if (p_output->i_handle >= 0)
++       close( p_output->i_handle );
+ 
+     config_Free( &p_output->config );
+ }
+@@ -458,10 +493,14 @@
+         p_output->raw_pkt_header.udph.len = htons(sizeof(struct udpheader) + i_payload_len);
+     }
+ 
+-    if ( writev( p_output->i_handle, p_iov, i_iov ) < 0 )
+-    {
+-        msg_Err( NULL, "couldn't writev to %s (%s)",
+-                 p_output->config.psz_displayname, strerror(errno) );
++    if ((p_output->mpts_only == 1) || (b_mpts_only == 0)) {
++        if ( writev( p_output->i_handle, p_iov, i_iov ) < 0 )
++        {
++            msg_Err( NULL, "couldn't writev to socket (%s)",
++                     strerror(errno) );
++            
++            ev_break(event_loop, EVBREAK_ALL);
++        }
+     }
+     /* Update the wallclock because writev() can take some time. */
+     i_wallclock = mdate();
+@@ -597,6 +636,9 @@
+                                sizeof(struct sockaddr_in6);
+     int i;
+ 
++    if (b_mpts_only == 1)
++       return NULL;
++
+     for ( i = 0; i < i_nb_outputs; i++ )
+     {
+         output_t *p_output = pp_outputs[i];
+@@ -634,7 +676,7 @@
+     p_output->config.i_output_latency = p_config->i_output_latency;
+     p_output->config.i_max_retention = p_config->i_max_retention;
+ 
+-    if ( p_output->config.i_ttl != p_config->i_ttl )
++    if ((p_output->config.uds_addr.sun_family == AF_UNSPEC) && (p_output->i_handle >= 0) && ( p_output->config.i_ttl != p_config->i_ttl ))
+     {
+         if ( p_output->config.i_family == AF_INET6 )
+         {
+@@ -658,7 +700,7 @@
+         p_output->raw_pkt_header.iph.ttl = p_config->i_ttl;
+     }
+ 
+-    if ( p_output->config.i_tos != p_config->i_tos )
++    if ((p_output->config.uds_addr.sun_family == AF_UNSPEC) && (p_output->i_handle >= 0) && ( p_output->config.i_tos != p_config->i_tos ))
+     {
+         if ( p_output->config.i_family == AF_INET )
+             ret = setsockopt( p_output->i_handle, IPPROTO_IP, IP_TOS,
+@@ -691,7 +733,7 @@
+         }
+     }
+ 
+-    if ( p_config->i_config & OUTPUT_RAW ) {
++    if ((p_output->i_handle >= 0) && ( p_config->i_config & OUTPUT_RAW )) {
+         p_output->raw_pkt_header.iph.saddr = inet_addr(p_config->psz_srcaddr);
+         p_output->raw_pkt_header.udph.source = htons(p_config->i_srcport);
+     }
